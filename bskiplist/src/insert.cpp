@@ -184,7 +184,15 @@ bool BSkip<traits>::insert(traits::element_type k)
         // if the key was found
         if (found_key)
         {
-            // release your lock and do nothing else in the key-only mode
+
+            // Fix: only release the lock here for the paths that don't
+            // need to write anything else (sets, and internal levels for
+            // maps, which re-lock lower down in the loop instead). The
+            // map-at-level-0 path keeps holding the very same write lock
+            // continuously through the value write, so no other thread can
+            // observe or mutate the leaf in between.
+            constexpr bool defers_unlock_to_map_leaf_write =
+                !traits::binary;
             if constexpr (traits::concurrent)
             {
                 // lock_timer.start();
@@ -200,7 +208,7 @@ bool BSkip<traits>::insert(traits::element_type k)
                         ((BSkipNodeInternal<traits> *)(curr_node))->mutex_.write_unlock();
                     }
                 }
-                else
+                else if (!(defers_unlock_to_map_leaf_write && level == 0))
                 {
                     ((BSkipNodeLeaf<traits> *)(curr_node))->mutex_.write_unlock();
                 }
@@ -211,10 +219,16 @@ bool BSkip<traits>::insert(traits::element_type k)
             {
                 if (level == 0)
                 {
+                    // still holding the write lock acquired for the search
+                    // above -- do NOT release and re-acquire it here, see
+                    // the comment above.
+                    /*
                     if constexpr (traits::concurrent)
                     {
                         ((BSkipNodeLeaf<traits> *)(curr_node))->mutex_.write_lock();
                     }
+                    */
+
                     // change leaf value
                     assert(curr_node->level == 0);
                     ((BSkipNodeLeaf<traits> *)curr_node)->set_elt_at_rank(rank, k);
